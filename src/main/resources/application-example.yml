@@ -14,13 +14,13 @@ spring:
   datasource:
     url: jdbc:mysql://127.0.0.1:3306/checkdata_agent?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=GMT%2B8&allowPublicKeyRetrieval=true
     username: root
-    password: 123456
+    password: <your-mysql-password>
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
       maximum-pool-size: 5
   ai:
     deepseek:
-      api-key: sk-6900160746d34c39acafd5b1521b1382
+      api-key: <your-deepseek-api-key>
       base-url: https://api.deepseek.com
       chat:
         options:
@@ -45,11 +45,11 @@ spring:
       max-request-size: 300MB
   data:
     redis:
-      host: 192.168.113.52   # 记得改成你自己的
-      port: 6389
+      host: <your-redis-host>
+      port: 6379
       database: 0
       timeout: 5s
-      password: 8uhb*UHB
+      password: <your-redis-password>
 
 # Skills 目录（改成你自己的本地绝对路径）
 skills:
@@ -93,11 +93,11 @@ minio:
 # PgVector 连接（用于文件 RAG + 长期语义记忆）
 embeddings:
   store:
-    host: jdbc:postgresql://127.0.0.1:5432/postgres
-    port: 5433
+    host: <your-pgvector-host>
+    port: 5432
     database: vector_store
-    user: postgres 
-    password: postgres 
+    user: <your-pgvector-user>
+    password: <your-pgvector-password> 
 
 # 多模态模型
 multimodal:
