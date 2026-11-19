@@ -1,18 +1,18 @@
 /**
- * 鑱婂ぉ涓婚〉閫昏緫锛堢嫭绔嬮〉闈紝涓嶅啀娣?Skills 绠＄悊锛夈€?
+ * 聊天主页逻辑（独立页面，不再混 Skills 管理）。
  *
- * 渚濊禆锛?
- *   - common.js 鏆撮湶鐨?window.DA锛坱oken / api / auth / theme / toast / renderHeader锛?
- *   - Vue 3 / marked / DOMPurify / highlight.js 閫氳繃 CDN 寮曞叆
+ * 依赖：
+ *   - common.js 暴露的 window.DA（token / api / auth / theme / toast / renderHeader）
+ *   - Vue 3 / marked / DOMPurify / highlight.js 通过 CDN 引入
  *
- * 澶勭悊娴佸紡浜嬩欢锛圥ascalCase 绫诲瀷锛夛細
+ * 处理 agentx 原生事件流（PascalCase 类型）：
  *   AgentStart / Thinking / Text / ToolStart / ToolEnd /
  *   TodoProgress / StageOutput / Error / Complete / Paused
  */
 const { createApp, ref, nextTick, onMounted, watch } = Vue;
 
-// 娴佸紡浜嬩欢绫诲瀷
-const DA_STREAM_EVENTS = {
+// agentx 事件类型
+const DA_AGENTX_EVENTS = {
     AGENT_START: 'AgentStart',
     THINKING: 'Thinking',
     TEXT: 'Text',
@@ -25,33 +25,33 @@ const DA_STREAM_EVENTS = {
     PAUSED: 'Paused'
 };
 
-// todo 鏂囨湰鍏抽敭璇?鈫?宸插畬鎴?tool 鏄犲皠锛堢敤浜庢帹鏂垝鎺夌姸鎬侊級
+// todo 文本关键词 → 已完成 tool 映射（用于推断划掉状态）
 const TODO_TOOL_MAP = [
-    { keys: ['schema', 'tables', 'columns', 'describe', 'list'], tools: ['exploreSchema', 'describeTables', 'listTables'] },
-    { keys: ['glossary', 'terms', 'dictionary', 'lookup'], tools: ['lookupGlossary'] },
-    { keys: ['chart', 'visualize', 'trend', 'plot', 'graph', 'diagram'], tools: ['generate_chart', 'generateChart'] },
-    { keys: ['calculate', 'python', 'ratio', 'formula'], tools: ['bash'] },
-    { keys: ['validate', 'verify', 'check'], tools: ['validateSql'] },
-    { keys: ['sql', 'query', 'search', 'execute', 'stats'], tools: ['executeSql'] },
-    { keys: ['search', 'web', 'tavily'], tools: ['tavily_search', 'tavily-search'] },
-    { keys: ['file', 'read', 'analyze'], tools: ['analyzeFile'] }
+    { keys: ['探查', 'schema', '表结构', '列名', '字段'], tools: ['exploreSchema', 'describeTables', 'listTables'] },
+    { keys: ['口径', '术语', '活跃', 'VIP', '大额', '指标'], tools: ['lookupGlossary'] },
+    { keys: ['图', '可视化', '趋势', '柱状', '折线', '饼', '出图', '画'], tools: ['generate_chart', 'generateChart'] },
+    { keys: ['计算', 'python', '环比', '贡献度', '归因'], tools: ['bash'] },
+    { keys: ['校验', '验证', '检查'], tools: ['validateSql'] },
+    { keys: ['SQL', '查询', '执行', '统计'], tools: ['executeSql'] },
+    { keys: ['搜索', '联网', '查一下'], tools: ['tavily_search', 'tavily-search'] },
+    { keys: ['加载', '读取', '文档', '文件'], tools: ['analyzeFile'] }
 ];
 
 createApp({
     setup() {
-        // ==================== 鐘舵€?====================
+        // ==================== 状态 ====================
         const messages = ref([]);
         const input = ref('');
         const sending = ref(false);
         const conversationId = ref(getOrCreateConvId());
         const previewUrl = ref('');
         const messagesContainer = ref(null);
-        const scroller = ref(null);   // 鐪熸鐨勬粴鍔ㄥ鍣?.da-main
+        const scroller = ref(null);   // 真正的滚动容器 .da-main
         const textareaRef = ref(null);
         const fileInputRef = ref(null);
         let streamController = null;
 
-        // ==================== 璇煶杈撳叆 ====================
+        // ==================== 语音输入 ====================
         const isListening = ref(false);
         const voiceSupported = ref(false);
         let recognition = null;
@@ -83,7 +83,7 @@ createApp({
             };
 
             recognition.onerror = (e) => {
-                console.warn('[voice] 璇嗗埆閿欒:', e.error);
+                console.warn('[voice] 识别错误:', e.error);
                 isListening.value = false;
             };
 
@@ -98,7 +98,7 @@ createApp({
 
         const toggleVoice = () => {
             if (!voiceSupported.value) {
-                DA.showToast('褰撳墠娴忚鍣ㄤ笉鏀寔璇煶杈撳叆锛岃浣跨敤 Chrome 鎴?Edge');
+                DA.showToast('当前浏览器不支持语音输入，请使用 Chrome 或 Edge');
                 return;
             }
             if (isListening.value) {
@@ -109,12 +109,12 @@ createApp({
                     recognition.start();
                     isListening.value = true;
                 } catch (e) {
-                    console.warn('[voice] 鍚姩澶辫触:', e);
+                    console.warn('[voice] 启动失败:', e);
                 }
             }
         };
 
-        // 鍘嗗彶浼氳瘽鍒楄〃锛堜晶鏍忓睍绀猴紝鍒嗛〉 + 婊氬姩鍔犺浇鏇村锛?
+        // 历史会话列表（侧栏展示，分页 + 滚动加载更多）
         const conversations = ref([]);
         const conversationsPage = ref(0);
         const conversationsTotal = ref(0);
@@ -122,7 +122,7 @@ createApp({
         const conversationsLoading = ref(false);
         const CONV_PAGE_SIZE = 10;
 
-        // 宸ュ叿鏍忕姸鎬侊細鑱旂綉寮€鍏?+ 鏂囨。涓婁紶
+        // 工具栏状态：联网开关 + 文档上传
         const onlineEnabled = ref(false);
         const uploading = ref(false);
         const uploadedFiles = ref([]);
@@ -130,25 +130,26 @@ createApp({
         const MAX_FILES = 3;
         const MAX_SIZE_MB = 100;
 
-        // 鏅鸿兘鑷姩婊氬姩锛氭祦寮忚拷鍔犳椂鍙湪 autoScroll=true 鏃舵粴鍒板簳
+        // 智能自动滚动：流式追加时只在 autoScroll=true 时滚到底
         const autoScroll = ref(true);
         const SCROLL_BOTTOM_THRESHOLD = 80;
 
-        // 渚ф爮鎶樺彔鐘舵€侊紙鎸佷箙鍖栧埌 localStorage锛?
+        // 侧栏折叠状态（持久化到 localStorage）
         const sidebarCollapsed = ref(localStorage.getItem('da-sidebar-collapsed') === 'true');
         const toggleSidebar = () => {
             sidebarCollapsed.value = !sidebarCollapsed.value;
             try { localStorage.setItem('da-sidebar-collapsed', String(sidebarCollapsed.value)); } catch (e) { /* ignore */ }
         };
 
-        // 鎺ㄨ崘闂        const suggestions = [
-            { text: '你有哪些技能？' },
-            { text: '帮我探索数据库表结构' },
-            { text: '分析销售数据趋势' },
-            { text: '生成一份可视化图表' }
+        // 推荐问题
+        const suggestions = [
+            { text: '你有哪些技能 Skill' },
+            { text: '分析 2005 年员工的销售业绩' },
+            { text: '全面分析 2005 年的租赁业务情况' },
+            { text: '各部门员工数量分布情况' }
         ];
 
-        // ==================== 閫氱敤宸ュ叿 ====================
+        // ==================== 通用工具 ====================
         const generateId = () => 'da_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9);
 
         function getOrCreateConvId() {
@@ -219,7 +220,7 @@ createApp({
             return typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(html) : html;
         };
 
-        // ==================== 鏃堕棿绾?/ Todo 杈呭姪 ====================
+        // ==================== 时间线 / Todo 辅助 ====================
         const dotClass = (item) => {
             if (item.type === 'thinking') return 'thinking';
             if (item.type === 'text') return 'text';
@@ -237,7 +238,7 @@ createApp({
         const completedCount = (items) =>
             (items || []).filter(t => t.status === 'completed').length;
 
-        // ==================== 宸ュ叿缁撴灉瑙ｆ瀽 ====================
+        // ==================== 工具结果解析 ====================
         const safeJsonParse = (s, fallback) => {
             try { return JSON.parse(s); } catch (e) { return fallback; }
         };
@@ -249,20 +250,20 @@ createApp({
             return argStr;
         };
 
-        // 瑙ｆ瀽 generate_chart 杩斿洖鏂囨湰閲岀殑鍥剧墖 URL
+        // 解析 generate_chart 返回文本里的图片 URL
         const parseChartUrl = (text) => {
             if (!text) return null;
             const urlMatch = text.match(/https?:\/\/[^\s)'"]+\.(?:png|jpg|jpeg|gif|webp)/i);
             if (urlMatch) {
-                const titleMatch = text.match(/title\s*[:锛歖\s*([^\n]+)/i);
-                return { url: urlMatch[0], title: titleMatch ? titleMatch[1].trim() : '鍥捐〃' };
+                const titleMatch = text.match(/title\s*[:：]\s*([^\n]+)/i);
+                return { url: urlMatch[0], title: titleMatch ? titleMatch[1].trim() : '图表' };
             }
             const md = text.match(/!\[([^\]]*)\]\(([^)]+)\)/);
-            if (md) return { url: md[2], title: md[1] || '鍥捐〃' };
+            if (md) return { url: md[2], title: md[1] || '图表' };
             return null;
         };
 
-        // 鍩轰簬宸插畬鎴愮殑 tool 鎺ㄦ柇 todo 鐘舵€?
+        // 基于已完成的 tool 推断 todo 状态
         const inferTodoStatus = (todo, completedTools) => {
             if (todo.status === 'completed') return 'completed';
             const text = (todo.text || todo.content || todo.task || '').toLowerCase();
@@ -276,7 +277,7 @@ createApp({
             return todo.status || 'pending';
         };
 
-        // ==================== 娑堟伅鏋勫缓 ====================
+        // ==================== 消息构建 ====================
         const newAssistantMsg = () => {
             const msg = {
                 id: generateId(),
@@ -291,7 +292,7 @@ createApp({
             return messages.value[messages.value.length - 1];
         };
 
-        // ==================== 浜嬩欢鍒嗗彂 ====================
+        // ==================== 事件分发 ====================
         const buildTodoSnapshot = (items, aiMsg) => {
             const completedTools = new Set(
                 aiMsg.timeline
@@ -325,7 +326,7 @@ createApp({
                 case 'chart_image': {
                     const obj = typeof payload === 'string' ? safeJsonParse(payload, {}) : (payload || {});
                     if (obj.url) {
-                        aiMsg.charts.push({ url: obj.url, title: obj.title || '鍥捐〃', type: obj.type || '' });
+                        aiMsg.charts.push({ url: obj.url, title: obj.title || '图表', type: obj.type || '' });
                     }
                     break;
                 }
@@ -342,17 +343,17 @@ createApp({
                     break;
                 }
                 default:
-                    console.debug('[chat] 蹇界暐 stage', stage);
+                    console.debug('[chat] 忽略 stage', stage);
             }
         };
 
-        const processStreamEvent = (event, aiMsg) => {
+        const processAgentxEvent = (event, aiMsg) => {
             switch (event.type) {
-                case DA_STREAM_EVENTS.AGENT_START:
+                case DA_AGENTX_EVENTS.AGENT_START:
                     aiMsg.loading = true;
                     break;
 
-                case DA_STREAM_EVENTS.THINKING: {
+                case DA_AGENTX_EVENTS.THINKING: {
                     const content = event.content || '';
                     const last = aiMsg.timeline[aiMsg.timeline.length - 1];
                     if (last && last.type === 'thinking') {
@@ -363,7 +364,7 @@ createApp({
                     break;
                 }
 
-                case DA_STREAM_EVENTS.TEXT: {
+                case DA_AGENTX_EVENTS.TEXT: {
                     const content = event.content || '';
                     if (!content) break;
                     const last = aiMsg.timeline[aiMsg.timeline.length - 1];
@@ -375,8 +376,8 @@ createApp({
                     break;
                 }
 
-                case DA_STREAM_EVENTS.TOOL_START: {
-                    // TodoWrite 璧扮嫭绔?todo 闈㈡澘锛屼笉杩?tool 鍗＄墖
+                case DA_AGENTX_EVENTS.TOOL_START: {
+                    // TodoWrite 走独立 todo 面板，不进 tool 卡片
                     if ((event.toolName || '').toLowerCase() === 'todowrite') {
                         const args = safeJsonParse(event.arguments || '', {});
                         const todos = Array.isArray(args.todos) ? args.todos : [];
@@ -400,7 +401,7 @@ createApp({
                     break;
                 }
 
-                case DA_STREAM_EVENTS.TOOL_END: {
+                case DA_AGENTX_EVENTS.TOOL_END: {
                     if ((event.toolName || '').toLowerCase() === 'todowrite') break;
                     const toolCallId = event.toolCallId || '';
                     const entry = aiMsg.timeline.find(it =>
@@ -424,7 +425,7 @@ createApp({
                     break;
                 }
 
-                case DA_STREAM_EVENTS.TODO_PROGRESS: {
+                case DA_AGENTX_EVENTS.TODO_PROGRESS: {
                     const items = Array.isArray(event.items) ? event.items : [];
                     aiMsg.timeline.push({
                         type: 'todo',
@@ -433,31 +434,31 @@ createApp({
                     break;
                 }
 
-                case DA_STREAM_EVENTS.STAGE_OUTPUT:
+                case DA_AGENTX_EVENTS.STAGE_OUTPUT:
                     dispatchStageOutput(event.stage, event.data, aiMsg);
                     break;
 
-                case DA_STREAM_EVENTS.ERROR:
+                case DA_AGENTX_EVENTS.ERROR:
                     aiMsg.timeline.push({
                         type: 'error',
-                        message: event.message || '鏈煡閿欒',
+                        message: event.message || '未知错误',
                         detail: event.detail || ''
                     });
                     break;
 
-                case DA_STREAM_EVENTS.COMPLETE:
+                case DA_AGENTX_EVENTS.COMPLETE:
                     aiMsg.loading = false;
                     break;
 
-                case DA_STREAM_EVENTS.PAUSED:
+                case DA_AGENTX_EVENTS.PAUSED:
                     break;
 
                 default:
-                    console.debug('[chat] 鏈煡浜嬩欢绫诲瀷', event);
+                    console.debug('[chat] 未知事件类型', event);
             }
         };
 
-        // ==================== 鍙戦€佹秷鎭紙SSE锛?====================
+        // ==================== 发送消息（SSE） ====================
         const sendMessage = async (presetText) => {
             const text = (presetText !== undefined ? presetText : input.value).toString().trim();
             if (!text || sending.value) return;
@@ -491,7 +492,7 @@ createApp({
             uploadedFiles.value = [];
             uploading.value = false;
 
-            // 鍗?ReactAgent 缁熶竴鍏ュ彛锛歅OST /agent/stream
+            // 单 ReactAgent 统一入口：POST /agent/stream
             const fileIds = successFiles.map(f => f.fileId);
             const requestBody = {
                 query: text,
@@ -506,25 +507,25 @@ createApp({
 
             streamController = DA.apiStream('/agent/stream', requestBody, {
                 onEvent(eventData, eventName) {
-                    // 浜嬩欢 data 鏄?JSON 瀛楃涓?
+                    // agentx 的事件 data 是 JSON 字符串
                     let event = eventData;
                     if (typeof eventData === 'string') {
                         event = safeJsonParse(eventData, null);
                         if (!event) {
-                            // 涓嶆槸 JSON锛屾寜 event name 鏋勯€犵畝鍗曚簨浠?
+                            // 不是 JSON，按 event name 构造简单事件
                             event = { type: eventName, content: eventData };
                         }
                     }
                     if (event && event.type) {
-                        processStreamEvent(event, aiMsg);
+                        processAgentxEvent(event, aiMsg);
                         scrollToBottom();
                     }
                 },
                 onError(err) {
-                    console.error('[chat] 娴佸紡璇锋眰澶辫触', err);
+                    console.error('[chat] 流式请求失败', err);
                     aiMsg.timeline.push({
                         type: 'error',
-                        message: '璇锋眰澶辫触',
+                        message: '请求失败',
                         detail: err.message || ''
                     });
                     aiMsg.loading = false;
@@ -535,7 +536,7 @@ createApp({
                     aiMsg.loading = false;
                     sending.value = false;
                     streamController = null;
-                    // 妗嗘灦宸茶嚜鍔ㄦ寔涔呭寲 timeline锛屽埛鏂颁晶鏍忓巻鍙插垪琛?
+                    // 框架已自动持久化 timeline，刷新侧栏历史列表
                     loadConversations();
                     scrollToBottom();
                 }
@@ -561,7 +562,7 @@ createApp({
                 if (streamController) streamController.abort();
                 sending.value = false;
             }
-            // 閲婃斁鏈湴 object URL
+            // 释放本地 object URL
             messages.value.forEach(m => {
                 if (m.attachments) m.attachments.forEach(a => {
                     if (a.previewUrl) { try { URL.revokeObjectURL(a.previewUrl); } catch (e) { /* ignore */ } }
@@ -580,7 +581,7 @@ createApp({
             window.history.replaceState({}, '', u.toString());
         };
 
-        // ==================== 鍘嗗彶浼氳瘽 ====================
+        // ==================== 历史会话 ====================
         const loadConversations = async (opts) => {
             const reset = !opts || opts.reset;
             const page = reset ? 0 : conversationsPage.value + 1;
@@ -603,7 +604,7 @@ createApp({
                 conversationsTotal.value = p ? p.total : items.length;
                 conversationsHasMore.value = p ? p.hasMore : false;
             } catch (e) {
-                console.warn('[chat] 鍔犺浇鍘嗗彶浼氳瘽澶辫触', e);
+                console.warn('[chat] 加载历史会话失败', e);
             } finally {
                 conversationsLoading.value = false;
             }
@@ -642,7 +643,7 @@ createApp({
                         timestamp: Date.now()
                     });
 
-                    // 妗嗘灦鍘熺敓 timeline锛歍imelineEntry[] 绾暟缁?
+                    // 框架原生 timeline：TimelineEntry[] 纯数组
                     let items = [];
                     if (round.timeline) {
                         const parsed = safeJsonParse(round.timeline, null);
@@ -655,7 +656,7 @@ createApp({
                         items.push({ type: 'text', content: round.answer });
                     }
 
-                    // 浠庡伐鍏风粨鏋滀腑閲嶅缓 charts
+                    // 从工具结果中重建 charts
                     const charts = [];
                     for (const it of items) {
                         if (it.type === 'tool' && it.result) {
@@ -685,21 +686,21 @@ createApp({
                 window.history.replaceState({}, '', u.toString());
                 nextTick(() => scrollToBottom());
             } catch (e) {
-                console.error('[chat] 鍔犺浇浼氳瘽澶辫触', e);
+                console.error('[chat] 加载会话失败', e);
             }
         };
 
         const deleteConversation = async (convId) => {
-            if (!confirm('纭鍒犻櫎璇ヤ細璇濓紵')) return;
+            if (!confirm('确认删除该会话？')) return;
             try {
                 await DA.apiDelete('/session/' + encodeURIComponent(convId));
-                DA.showToast('宸插垹闄?);
+                DA.showToast('已删除');
                 if (convId === conversationId.value) {
                     newConversation();
                 }
                 await loadConversations();
             } catch (e) {
-                console.error('[chat] 鍒犻櫎浼氳瘽澶辫触', e);
+                console.error('[chat] 删除会话失败', e);
             }
         };
 
@@ -711,17 +712,17 @@ createApp({
                 const diffMin = Math.floor(diffMs / 60000);
                 const diffHour = Math.floor(diffMs / 3600000);
                 const diffDay = Math.floor(diffMs / 86400000);
-                if (diffMin < 1) return '鍒氬垰';
-                if (diffMin < 60) return diffMin + ' 鍒嗛挓鍓?;
-                if (diffHour < 24) return diffHour + ' 灏忔椂鍓?;
-                if (diffDay < 7) return diffDay + ' 澶╁墠';
+                if (diffMin < 1) return '刚刚';
+                if (diffMin < 60) return diffMin + ' 分钟前';
+                if (diffHour < 24) return diffHour + ' 小时前';
+                if (diffDay < 7) return diffDay + ' 天前';
                 return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
             } catch (e) {
                 return '';
             }
         };
 
-        // ==================== 鏂囨。涓婁紶 ====================
+        // ==================== 文档上传 ====================
         const triggerUpload = () => {
             if (fileInputRef.value) fileInputRef.value.click();
         };
@@ -741,11 +742,11 @@ createApp({
 
         const uploadFile = async (file) => {
             if (uploadedFiles.value.length >= MAX_FILES) {
-                DA.showToast(`鏈€澶氫笂浼?${MAX_FILES} 涓枃浠禶);
+                DA.showToast(`最多上传 ${MAX_FILES} 个文件`);
                 return;
             }
             if (file.size > MAX_SIZE_MB * 1024 * 1024) {
-                DA.showToast(`鏂囦欢 "${file.name}" 瓒呰繃 ${MAX_SIZE_MB}MB`);
+                DA.showToast(`文件 "${file.name}" 超过 ${MAX_SIZE_MB}MB`);
                 return;
             }
 
@@ -767,16 +768,16 @@ createApp({
                 const formData = new FormData();
                 formData.append('file', file);
                 const json = await DA.apiUpload('/api/files/upload', formData);
-                if (!json.data) throw new Error(json.msg || '涓婁紶澶辫触');
+                if (!json.data) throw new Error(json.msg || '上传失败');
                 placeholder.fileId = json.data.fileId;
                 placeholder.fileName = json.data.fileName;
                 placeholder.fileType = json.data.fileType;
                 placeholder.fileSize = json.data.fileSize;
                 placeholder.status = json.data.status || 'SUCCESS';
             } catch (e) {
-                console.error('[chat] 涓婁紶澶辫触', e);
+                console.error('[chat] 上传失败', e);
                 placeholder.status = 'FAILED';
-                DA.showToast(`"${file.name}" 涓婁紶澶辫触: ${e.message}`);
+                DA.showToast(`"${file.name}" 上传失败: ${e.message}`);
             } finally {
                 uploading.value = uploadedFiles.value.some(f => f.status === 'uploading');
             }
@@ -789,7 +790,7 @@ createApp({
                 try {
                     await DA.apiDelete('/api/files/' + f.fileId);
                 } catch (e) {
-                    console.warn('[chat] 鍒犻櫎鏂囦欢鍏冩暟鎹け璐?, e);
+                    console.warn('[chat] 删除文件元数据失败', e);
                 }
             }
             if (f.previewUrl) {
@@ -814,13 +815,13 @@ createApp({
             isDragging.value = false;
         };
 
-        // ==================== 椤舵爮 ====================
-        // 鐢?common.js 鐨?renderHeader 娓叉煋锛屾湰缁勪欢鍙渶璋冪敤缁戝畾鍑芥暟
+        // ==================== 顶栏 ====================
+        // 由 common.js 的 renderHeader 渲染，本组件只需调用绑定函数
         const currentUser = ref(null);
 
-        // ==================== 鐢熷懡鍛ㄦ湡 ====================
+        // ==================== 生命周期 ====================
         onMounted(async () => {
-            // 閴存潈瀹堝崼锛氭湭鐧诲綍璺?/login.html
+            // 鉴权守卫：未登录跳 /login.html
             const user = await DA.requireAuth();
             if (!user) return;
             currentUser.value = user;
@@ -828,7 +829,7 @@ createApp({
             setupMarkdown();
             initVoice();
 
-            // 娓叉煋椤舵爮锛堢敤 innerHTML 娉ㄥ叆 common.js 鐨?renderHeader锛?
+            // 渲染顶栏（用 innerHTML 注入 common.js 的 renderHeader）
             const headerHost = document.getElementById('da-header-host');
             if (headerHost) {
                 headerHost.innerHTML = DA.renderHeader({
@@ -837,7 +838,7 @@ createApp({
                     sidebarToggle: true
                 });
                 DA.bindHeaderEvents();
-                // 渚ф爮鎶樺彔鎸夐挳锛堜粎鑱婂ぉ椤垫湁锛?
+                // 侧栏折叠按钮（仅聊天页有）
                 const sidebarToggleBtn = document.getElementById('da-sidebar-toggle');
                 if (sidebarToggleBtn) {
                     sidebarToggleBtn.addEventListener('click', () => toggleSidebar());
