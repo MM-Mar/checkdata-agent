@@ -1,0 +1,26 @@
+# 真实配置文件（含敏感 API Key / 数据库密码 / MinIO 凭证）
+# 请复制 application-example.yml 为 application.yml 并填写你自己的配置
+src/main/resources/application.yml
+
+# Maven
+target/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.project
+*.classpath
+.settings/
+
+# 日志
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code
+.claude/
+CLAUDE.md
